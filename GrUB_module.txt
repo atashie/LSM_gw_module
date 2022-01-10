@@ -1,0 +1,89 @@
+#####################################################################################################################
+### R code for running the Groundwater for Ungauged Basins (GrUB) module
+### For any questions regarding use of the code, please contact Arik Tashie - tashi002@ua.edu
+
+
+	# loading catchment variables from Tashie et al. 2021
+	# the data are available at https://www.hydroshare.org/resource/115409dbe8354e78a2c2219d32e2b9de/
+all_aq_chars = as.data.table(read_feather("XXXXX\\Ksat_Storage_for_CONUS_inc_infils.feather"))
+
+	# initializing some generic varaiables
+f = 0.1							# drainable porosity; real data may be used where available
+L_scalar = 1.5					# for rescaling stream length data available from the USGS, which tends to underestimate actual stream length
+
+	# empirical equation for treating Ksat as a function of storage
+k_fof_D = function(D_thickness, conmod_yint, conmod_slp)	{
+	10^(conmod_yint + conmod_slp * D_thickness)
+	}
+
+	# identify which HUC you wish to perform your analysis on
+which_huc = 1 														# ~ 103,000 HUCS for CONUS are available
+
+	# note that all variables are here rescaled to be in units of [mm] and [mm/d], although any rescaling may be used so long as it is consistently applied
+D_dry = all_aq_chars$Storage_Dry[which_huc] / f						# mm --> mm
+D_wet = all_aq_chars$Storage_Wet[which_huc] / f 					# mm--> mm
+K_dry = all_aq_chars$Ksat_Dry[which_huc] * (60*60*24) * 10			# cm/s --> mm/d
+K_wet = all_aq_chars$Ksat_Wet[which_huc] * (60*60*24) * 10			# cm/s --> mm/d
+Wo = all_aq_chars$CAT_STREAM_LENGTH[which_huc] * 1000000 * L_scalar	# km --> mm ; Stream length; also rescaled by L_scalar
+i_slp = atan(all_aq_chars$CAT_BASIN_SLOPE[which_huc] / 100)			# topographic slop as a proxy for aquifer slope
+A = max(all_aq_chars$CAT_BASIN_AREA[which_huc] * 1000000^2, 1000000^2)	# km2 --> mm2 ; catchment area
+B = allhucs[iter,"A"] / (2*allhucs[iter,"Wo"])						# aquifer 'breadth' or the 'length' of the aquifer in profile
+sin_slp = sin(allhucs[iter,"i_slp"])								
+cos_slp = cos(allhucs[iter,"i_slp"])								
+strm_crs_sxn = allhucs[iter,"Wo"] * 2 / allhucs[iter,"A"]			# accounting for a stream having 2 banks
+B_half = allhucs[iter,"B"] / 2										 
+param_v = 0.86														# future versions of GrUB may allow this value to be empirically determined for each watershed
+param_d = 0.001														# future versions of GrUB may allow this value to be empirically determined for each watershed
+min_depth = param_d * D_dry 										# minimum value of Ho, i.e., the saturated thickness as the stream-aquifer interface
+
+	# empirical relationship relating Ksat to S
+con_mod = lm(c(log10(K_dry), log10(K_wet)) ~ c(D_dry, D_wet))
+conmod_yint = con_mod$coef[1]
+conmod_slp  = con_mod$coef[2]
+
+	# initializing variables
+gw_out = NULL
+gw_et_out = NULL
+et_out = NULL
+deep_store = D_dry * f
+depth = D_dry
+accum_rech = 0
+
+##########################################################################
+##		Here the user must insert a timeseries of deep recharge which is termed "N" in Tashie et al. 2022
+
+deep_rech = [!!!!!!!!!!!!!!!!]
+
+##		Here the user must insert a timeseries of deep recharge which is termed "N" in Tashie et al. 2022
+##########################################################################
+
+
+	# this is the GrUB module: Qsb = K * dh/dx * Ho * L
+for(gg in 1:length(deep_rech))	{
+	  accum_rech = min(accum_rech * param_v + max(deep_rech[gg] / (f), 0), depth)	# update cummulative recharge term for calculating Ho
+	  k_arb = as.numeric(k_fof_D(													# update Ksat as a function of S
+		conmod_yint = conmod_yint,
+		conmod_slp = conmod_slp,
+		D_thickness = depth)
+	  )
+				
+	  gw_out_iter =														# Qsb
+			k_arb *														# Ksat
+			((sin_slp*B_half + depth/sin_slp) / (B_half*cos_slp) ) *  	# dh/dx
+			(min_depth  + accum_rech) * 								# Ho
+			strm_crs_sxn 												# L
+				
+	  if(gw_out_iter > deep_store[gg]) {gw_out_iter = deep_store[gg]}	# for conservation of mass
+		  
+	  new_deep_store =													# S
+	    deep_store[gg] +									
+		deep_rech[gg] -
+		gw_out_iter
+	  deep_store = c(deep_store, new_deep_store)						# saving values of S for future investigation
+	  depth = new_deep_store / f 										# D = S / f
+			  
+	  gw_out = c(gw_out, gw_out_iter)									# saving values of Qsb for future investigation
+}
+
+
+### For any questions regarding use of the code, please contact Arik Tashie - tashi002@ua.edu
